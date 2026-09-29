@@ -262,12 +262,12 @@ MonoBehaviour:
   ball: {fileID: 8217042315133374093}
   shootingPoint: {fileID: 489360874}
   aimLine: {fileID: 152038884}
-  maxDragDistance: 3
+  maxDragDistance: 5
   minimumAimAngle: 20
   maximumAimAngle: 160
   minLaunchForce: 8
-  maxLaunchForce: 10
-  maxReflections: 5
+  maxLaunchForce: 15
+  maxReflections: 2
   rayDistance: 20
   trajectoryMask:
     serializedVersion: 2
