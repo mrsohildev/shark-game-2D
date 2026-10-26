@@ -1,16 +1,16 @@
 using UnityEngine;
 
-// Attach this to the Ball GameObject (same object as its Rigidbody2D/Collider2D).
-// Unity only calls OnCollisionEnter2D on a script sitting on the colliding
-// object, so without this relay, BubbleShooterAim.ReflectBall() is never
-// invoked and the ball just passes through walls without bouncing.
+// Ye chhota "messenger" script ball par lagta hai (BubbleShooterAim khud laga deta hai).
+// Unity "takra gaya" ki khabar sirf takrane wale object ki script ko deta hai,
+// isliye ye ball se takrane ki khabar BubbleShooterAim tak pahunchata hai.
 public class BallCollisionRelay : MonoBehaviour
 {
     public BubbleShooterAim shooter;
 
-    void OnCollisionEnter2D(Collision2D collision)
-    {
-        if (shooter != null)
-            shooter.ReflectBall(collision);
-    }
+    // Unity ye function khud bulata hai jab ball kisi se takrati hai.
+    //void OnCollisionEnter2D(Collision2D collision)
+    //{
+    //    if (shooter != null)
+    //        //shooter.ReflectBall(collision);
+    //}
 }

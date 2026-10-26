@@ -1,247 +1,295 @@
+using System.Collections.Generic;
 using UnityEngine;
 
+// =====================================================================
+//  BubbleShooterAim  (EASY VERSION 2: mobile + 10 balls)
+//  Kaam: kheencho -> aim line dikhao -> chhodo -> ball shoot -> bounce.
+//
+//  Naya kya hai:
+//    - Mobile touch chalta hai (PC par mouse bhi chalta hai)
+//    - Ek ke baad ek 10 balls (maxBalls) shoot kar sakte ho,
+//      pehli ball ke udte hue bhi
+//
+//  Hisse:
+//    1) SETTINGS : sirf numbers badalne hain
+//    2) INPUT    : touch / mouse padhna
+//    3) AIM      : kheenchna, angle theek karna, line dikhana
+//    4) SHOOT    : ball banana aur chhodna
+// =====================================================================
 public class BubbleShooterAim : MonoBehaviour
 {
-    public Rigidbody2D ball;
-    public Transform shootingPoint;
-    public LineRenderer aimLine;
+    // ---------------------------------------------------------------
+    // 1) SETTINGS
+    // ---------------------------------------------------------------
 
-    [Header("Aim")]
-    public float maxDragDistance = 5f;
-    public float minimumAimAngle = 20f;
-    // Caps how steep/vertical the shot can go. 90 = straight up allowed,
-    // lower values (e.g. 75) stop it from firing too close to vertical.
-    public float maximumAimAngle = 160f;
+    [Header("Inspector mein drag-drop karo")]
+    public GameObject ballPrefab;       // ball ka prefab (Rigidbody2D + Circle Collider2D wala)
+    public Transform shootingPoint;     // jahan se ball shoot hoti hai
+    public LineRenderer aimLine;        // dikhne wali preview line
 
-    [Header("Ball")]
-    // Force scales with how far the player pulls back (like a slingshot).
-    // At full maxDragDistance, launch force = maxLaunchForce.
-    public float minLaunchForce = 8f;
-    public float maxLaunchForce = 15f;
+    [Header("Balls")]
+    public int maxBalls = 10;           // total kitni balls shoot kar sakte ho
+    public int ballsLeft;               // abhi kitni bachi hain (khud ghat-ti hai)
+    public float fireDelay = 0.3f;      // ek shot ke baad agla shot kitni der baad (seconds)
+    public float ballLifeTime = 10f;    // ball kitni der baad gayab (0 = kabhi nahi)
 
-    [Header("Trajectory")]
-    public int maxReflections = 3;
-    public float rayDistance = 20f;
-    // Assign this in the Inspector to EXCLUDE the ball's own layer,
-    // otherwise the first raycast can hit the ball itself.
-    public LayerMask trajectoryMask = ~0;
+    [Header("Kheenchna (pull)")]
+    public float maxDragDistance = 5f;  // zyada se zyada kitna kheench sakte ho
+    public float minPullToShoot = 0.3f; // isse chhoti pull par shot nahi (galti se tap)
+    // true  = jahan ungli rakhi wahin se kheencho (mobile ke liye best)
+    // false = shootingPoint se ungli/mouse tak ka fasla pull mana jayega
+    public bool dragFromTouchStart = true;
 
-    [Header("Ball Radius (for accurate preview)")]
-    // Should match the Circle Collider2D radius on the ball.
-    // Using a plain Raycast (zero width) instead of the ball's actual
-    // size is the #1 cause of the preview line and real ball not
-    // matching at the bounce point.
-    public float ballRadius = 0.25f;
+    [Header("Angle limit (degree). 0 = side, 90 = seedha upar")]
+    public float minimumAimAngle = 20f; // isse kam angle par shot nahi
+    public float maximumAimAngle = 90f; // 90 = koi limit nahi. 75 = seedha-upar mana
 
-    private Camera cam;
-    private Vector2 aimDirection;
-    private Vector2 velocityDirection;
-    private float currentLaunchForce;
-    private bool isDragging;
-    private bool ballLaunched;
+    [Header("Speed (force)")]
+    public float minLaunchForce = 8f;   // halka kheencho to itni speed
+    public float maxLaunchForce = 15f;  // poora kheencho to itni speed
 
+    [Header("Preview line")]
+    public int maxReflections = 3;      // line kitni baar bounce dikhaye
+    public float rayDistance = 20f;     // line ka ek tukda maximum kitna lamba
+    public LayerMask trajectoryMask = ~0; // line kin layers se takrayegi (ball wali layer hata do)
+    public float ballRadius = 0.25f;    // prefab mein Circle Collider2D ho to khud wahan se le leta hai
+
+
+    // ---------------------------------------------------------------
+    // Script ki apni yaad-dasht (inhe chhedna nahi hai)
+    // ---------------------------------------------------------------
+    Camera cam;
+    Vector2 aimDirection;       // player ne kis taraf aim kiya
+    Vector2 dragStartWorld;     // ungli/mouse pehli baar kahan rakhi thi
+    float force;                // is shot ki speed
+    float pullAmount;           // abhi kitna kheench rahe ho
+    float nextFireTime;         // agla shot kab allowed hai
+    bool isDragging;            // abhi kheench rahe ho?
+    List<Collider2D> flyingBalls = new List<Collider2D>(); // udti hui balls (aapas mein na takraayein)
+
+
+    // ---------------------------------------------------------------
+    // GAME SHURU HONE PAR
+    // ---------------------------------------------------------------
     void Awake()
     {
-        // Prevents CircleCast from treating the ball's own overlap with
-        // the wall it just bounced off as a fresh "hit" at distance 0,
-        // which was breaking reflections after adding CircleCast.
+        // Ball deewar ko chhu rahi ho to line usse "hit" na maane.
         Physics2D.queriesStartInColliders = false;
-
-        // Bubble-shooter aim assumes straight-line travel.
-        // If gravity is on, the real ball will arc away from the preview.
-        if (ball != null)
-        {
-            ball.gravityScale = 0f;
-            // Prevents fast-moving balls from tunneling through thin
-            // colliders between physics steps (missed collisions).
-            ball.collisionDetectionMode = CollisionDetectionMode2D.Continuous;
-        }
     }
 
     void Start()
     {
         cam = Camera.main;
-        aimLine.positionCount = 0;
+        aimLine.positionCount = 0; // shuru mein line chhupi hui
+        ballsLeft = maxBalls;
 
-        // Auto-wire the relay component so the ball actually reports
-        // collisions back to this script. See BallCollisionRelay.cs.
-        if (ball != null)
-        {
-            BallCollisionRelay relay = ball.GetComponent<BallCollisionRelay>();
-            if (relay == null)
-                relay = ball.gameObject.AddComponent<BallCollisionRelay>();
-            relay.shooter = this;
-        }
+        // Prefab ke Circle Collider2D se ball ka radius khud nikal lo.
+        CircleCollider2D circle = ballPrefab.GetComponent<CircleCollider2D>();
+        if (circle != null)
+            ballRadius = circle.radius * ballPrefab.transform.localScale.x;
     }
 
+
+    // ---------------------------------------------------------------
+    // 2) INPUT  (touch pehle, nahi to mouse)
+    // ---------------------------------------------------------------
+    bool PointerDown()
+    {
+        if (Input.touchCount > 0)
+            return Input.GetTouch(0).phase == TouchPhase.Began;
+        return Input.GetMouseButtonDown(0);
+    }
+
+    bool PointerUp()
+    {
+        if (Input.touchCount > 0)
+        {
+            TouchPhase phase = Input.GetTouch(0).phase;
+            return phase == TouchPhase.Ended || phase == TouchPhase.Canceled;
+        }
+        return Input.GetMouseButtonUp(0);
+    }
+
+    // Ungli ya mouse ki jagah, game ki duniya mein.
+    Vector2 PointerWorldPosition()
+    {
+        Vector2 screenPos = Input.touchCount > 0 ? Input.GetTouch(0).position : (Vector2)Input.mousePosition;
+        return cam.ScreenToWorldPoint(screenPos);
+    }
+
+    bool CanShoot()
+    {
+        return ballsLeft > 0 && Time.time >= nextFireTime;
+    }
+
+
+    // ---------------------------------------------------------------
+    // 3) AIM  (har frame chalta hai)
+    // ---------------------------------------------------------------
     void Update()
     {
-        if (ballLaunched)
-            return;
-
-        Vector2 pointerPosition = cam.ScreenToWorldPoint(Input.mousePosition);
-
-        if (Input.GetMouseButtonDown(0))
+        // Touch/click hua aur shot allowed hai -> kheenchna shuru.
+        if (PointerDown() && CanShoot())
         {
             isDragging = true;
+            dragStartWorld = PointerWorldPosition();
         }
 
+        // Kheench rahe ho -> aim aur line update karo.
         if (isDragging)
-        {
-            Vector2 pull = pointerPosition - (Vector2)shootingPoint.position;
+            UpdateAim();
 
-            if (pull.magnitude > maxDragDistance)
-            {
-                pull = pull.normalized * maxDragDistance;
-            }
-
-            if (pull.sqrMagnitude > 0.001f)
-            {
-                Vector2 desiredDirection = -pull.normalized;
-                aimDirection = ClampAimDirection(desiredDirection);
-
-                // Stronger pull = stronger shot, mapped between
-                // minLaunchForce and maxLaunchForce.
-                float pullFraction = pull.magnitude / maxDragDistance;
-                currentLaunchForce = Mathf.Lerp(minLaunchForce, maxLaunchForce, pullFraction);
-
-                ShowTrajectory(shootingPoint.position, aimDirection);
-            }
-        }
-
-        if (Input.GetMouseButtonUp(0) && isDragging)
-        {
-            LaunchBall();
-        }
+        // Ungli/mouse chhodi -> shoot.
+        if (PointerUp() && isDragging)
+            Shoot();
     }
 
-    Vector2 ClampAimDirection(Vector2 direction)
+    void UpdateAim()
     {
-        float angle = Mathf.Atan2(direction.y, Mathf.Abs(direction.x)) * Mathf.Rad2Deg;
-        float xDirection = direction.x >= 0f ? 1f : -1f;
+        // 1. Kahan se kheencha mana jaye.
+        Vector2 origin = dragFromTouchStart ? dragStartWorld : (Vector2)shootingPoint.position;
 
-        // Ball is aimed too low / sideways / downward — snap up to the
-        // minimum allowed angle.
-        if (direction.y <= 0f || angle < minimumAimAngle)
+        // 2. Pull = origin se ungli/mouse tak ka teer.
+        Vector2 pull = PointerWorldPosition() - origin;
+
+        // 3. Zyada kheencha to limit par kaat do.
+        if (pull.magnitude > maxDragDistance)
+            pull = pull.normalized * maxDragDistance;
+
+        pullAmount = pull.magnitude;
+
+        // 4. Bahut chhoti pull -> kuch mat dikhao.
+        if (pullAmount < 0.03f)
         {
-            float minAngleRadians = minimumAimAngle * Mathf.Deg2Rad;
-            return new Vector2(
-                xDirection * Mathf.Cos(minAngleRadians),
-                Mathf.Sin(minAngleRadians)
-            ).normalized;
+            aimDirection = Vector2.zero;
+            aimLine.positionCount = 0;
+            return;
         }
 
-        // Ball is aimed too steep/vertical — clamp down to the maximum
-        // allowed angle so it can't fire straight up (or past your limit).
-        if (angle > maximumAimAngle)
-        {
-            float maxAngleRadians = maximumAimAngle * Mathf.Deg2Rad;
-            return new Vector2(
-                xDirection * Mathf.Cos(maxAngleRadians),
-                Mathf.Sin(maxAngleRadians)
-            ).normalized;
-        }
+        // 5. Disha = pull ki ULTI taraf (slingshot), phir angle limit lagao.
+        aimDirection = FixAngle(-pull.normalized);
 
-        return direction.normalized;
+        // 6. Jitna zyada kheencha, utni zyada speed.
+        float pullPercent = pullAmount / maxDragDistance; // 0 se 1
+        force = Mathf.Lerp(minLaunchForce, maxLaunchForce, pullPercent);
+
+        // 7. Preview line banao.
+        DrawAimLine();
     }
 
-    void ShowTrajectory(Vector2 startPosition, Vector2 direction)
+    // Disha ka angle limit ke andar rakhta hai.
+    Vector2 FixAngle(Vector2 dir)
     {
-        Vector2 currentPosition = startPosition;
-        Vector2 currentDirection = direction;
+        // Angle nikalo: 0 = bilkul side, 90 = seedha upar.
+        float angle = Mathf.Atan2(dir.y, Mathf.Abs(dir.x)) * Mathf.Rad2Deg;
+
+        // Left gaye ya right, ye yaad rakho.
+        float side = dir.x >= 0f ? 1f : -1f;
+
+        if (dir.y <= 0f || angle < minimumAimAngle)
+            angle = minimumAimAngle;          // bahut neeche/side -> minimum par chipka do
+        else if (angle > maximumAimAngle)
+            angle = maximumAimAngle;          // bahut steep -> maximum par chipka do
+        else
+            return dir.normalized;            // sab theek hai
+
+        // Angle se wapas disha banao: (cos, sin).
+        float rad = angle * Mathf.Deg2Rad;
+        return new Vector2(side * Mathf.Cos(rad), Mathf.Sin(rad));
+    }
+
+    // Preview line: ball jaayegi to kahan-kahan takrayegi.
+    void DrawAimLine()
+    {
+        Vector2 pos = shootingPoint.position;
+        Vector2 dir = aimDirection;
 
         aimLine.positionCount = 1;
-        aimLine.SetPosition(0, currentPosition);
+        aimLine.SetPosition(0, pos);
 
         for (int i = 0; i < maxReflections; i++)
         {
-            // CircleCast (not Raycast) so the predicted bounce point
-            // matches where the ball's actual surface touches the wall,
-            // not where a zero-width line would touch it.
-            RaycastHit2D hit = Physics2D.CircleCast(
-                currentPosition,
-                ballRadius,
-                currentDirection,
-                rayDistance,
-                trajectoryMask
-            );
+            // Moti gol ball ko aage dhakelo, dekho pehle kis cheez se takrati hai.
+            RaycastHit2D hit = Physics2D.CircleCast(pos, ballRadius, dir, rayDistance, trajectoryMask);
 
+            // Kuch nahi takraya -> line seedhi aage tak kheench do aur ruk jao.
             if (hit.collider == null)
             {
-                aimLine.positionCount++;
-                aimLine.SetPosition(
-                    aimLine.positionCount - 1,
-                    currentPosition + currentDirection * rayDistance
-                );
+                AddLinePoint(pos + dir * rayDistance);
                 break;
             }
 
-            aimLine.positionCount++;
-            aimLine.SetPosition(aimLine.positionCount - 1, hit.point);
+            // Takraya -> yahan line ka naya point.
+            AddLinePoint(hit.point);
 
-            currentDirection = Vector2.Reflect(currentDirection, hit.normal);
-            // Push the next cast's start point clear of the wall by the
-            // ball's full radius (not just a tiny epsilon) — with
-            // CircleCast, a small offset still overlaps the wall and
-            // causes the next cast to falsely "hit" the same surface,
-            // which stops the line from reflecting further.
-            currentPosition = hit.point + hit.normal * (ballRadius + 0.05f);
+            // Bounce: disha badlo.
+            dir = Vector2.Reflect(dir, hit.normal);
+
+            // Agla tukda deewar se thoda bahar se shuru karo.
+            pos = hit.point + hit.normal * (ballRadius + 0.05f);
         }
     }
 
-    void LaunchBall()
+    void AddLinePoint(Vector2 point)
+    {
+        aimLine.positionCount++;
+        aimLine.SetPosition(aimLine.positionCount - 1, point);
+    }
+
+
+    // ---------------------------------------------------------------
+    // 4) SHOOT
+    // ---------------------------------------------------------------
+    void Shoot()
     {
         isDragging = false;
+        aimLine.positionCount = 0; // agle shot ke liye line saaf
 
-        if (aimDirection.sqrMagnitude < 0.001f)
+        // Sahi disha nahi bani, ya pull bahut chhoti thi (galti se tap) -> shot nahi.
+        if (aimDirection.sqrMagnitude < 0.001f || pullAmount < minPullToShoot)
             return;
 
-        ball.position = shootingPoint.position;
-        velocityDirection = aimDirection;
-        ball.linearVelocity = velocityDirection * currentLaunchForce;
-        ballLaunched = true;
+        // Nayi ball banao.
+        GameObject ballObject = Instantiate(ballPrefab, shootingPoint.position, Quaternion.identity);
 
-        //aimLine.positionCount = 0;
+        // Ball par BouncingBall script na ho to laga do.
+        BouncingBall newBall = ballObject.GetComponent<BouncingBall>();
+        if (newBall == null)
+            newBall = ballObject.AddComponent<BouncingBall>();
+
+        // Udti hui doosri balls se takrao mat.
+        IgnoreOtherBalls(ballObject.GetComponent<Collider2D>());
+
+        // Chhod do.
+        newBall.Launch(aimDirection, force, ballLifeTime);
+
+        ballsLeft--;
+        nextFireTime = Time.time + fireDelay;
     }
 
-    void FixedUpdate()
+    void IgnoreOtherBalls(Collider2D newCollider)
     {
-        if (!ballLaunched)
-            return;
+        if (newCollider == null) return;
 
-        // Enforce our own tracked direction every physics step, instead
-        // of reading ball.linearVelocity back. The physics solver can
-        // damp/zero the velocity on contact (especially with 0
-        // bounciness) before our reflection code ever runs, which was
-        // causing the ball to stall instead of bounce. Our own
-        // velocityDirection is never touched by the solver, so this
-        // keeps the ball moving exactly along the reflected path.
-        ball.linearVelocity = velocityDirection * currentLaunchForce;
+        flyingBalls.RemoveAll(c => c == null); // jo gayab ho gayi unhe list se hatao
+
+        foreach (Collider2D other in flyingBalls)
+            Physics2D.IgnoreCollision(newCollider, other);
+
+        flyingBalls.Add(newCollider);
     }
 
-    // Called by BallCollisionRelay when the ball's own collider hits something.
-    public void ReflectBall(Collision2D collision)
+
+    // ---------------------------------------------------------------
+    // Baahar ke scripts / buttons ke liye
+    // ---------------------------------------------------------------
+    public void RefillBalls()           // balls wapas poori (maxBalls)
     {
-        if (!ballLaunched)
-            return;
-
-        Vector2 normal = collision.contacts[0].normal;
-        velocityDirection = Vector2.Reflect(velocityDirection, normal).normalized;
-
-        ball.linearVelocity = velocityDirection * currentLaunchForce;
+        ballsLeft = maxBalls;
     }
 
-    public void ResetBall()
+    public void AddBalls(int count)     // extra balls do (jaise power-up)
     {
-        ball.linearVelocity = Vector2.zero;
-        ball.angularVelocity = 0f;
-        ball.position = shootingPoint.position;
-
-        aimDirection = Vector2.zero;
-        velocityDirection = Vector2.zero;
-        isDragging = false;
-        ballLaunched = false;
-
-        aimLine.positionCount = 0;
+        ballsLeft += count;
     }
 }
